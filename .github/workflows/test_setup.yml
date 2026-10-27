@@ -1,10 +1,7 @@
-# Va en: .github/workflows/test_setup.yml
-# Se lanza a mano: pestaña Actions > "Test setup modelado" > Run workflow
+# Va en: .github/workflows/test_setup.yml  (rama main)
 name: Test setup modelado
-# forzar ejecución
+
 on:
-  push:
-    branches: [feat/test]
   workflow_dispatch:
     inputs:
       squad:
@@ -12,9 +9,12 @@ on:
         required: true
         default: 'SG_3'
 
-# Solo lectura: el workflow no puede modificar el repo
 permissions:
   contents: read
+
+# Si se lanza con push no hay input: se usa SG_3
+env:
+  SQUAD: ${{ github.event.inputs.squad || 'SG_3' }}
 
 jobs:
   test:
@@ -24,6 +24,16 @@ jobs:
     steps:
       - name: Descargar el repo
         uses: actions/checkout@v4
+
+      - name: Comprobar version del script
+        shell: pwsh
+        run: |
+          $line = Select-String -Path .\setup_modelado.ps1 -Pattern "SETUP_VERSION\s*=" | Select-Object -First 1
+          Write-Host "Script: $($line.Line.Trim())"
+          if (-not (Select-String -Path .\setup_modelado.ps1 -Pattern '\[switch\]\$AllowAdmin' -Quiet)) {
+            Write-Host "::error::El setup_modelado.ps1 de esta rama no es la v1.3 (no tiene -AllowAdmin)."
+            exit 1
+          }
 
       - name: Comprobar que no hay secretos en el repo
         shell: pwsh
@@ -57,23 +67,23 @@ jobs:
               Write-Host ("  OK ({0:N0} MB)" -f ((Get-Item $out).Length / 1MB))
             }
             catch {
-              # Si falla una descarga no se para: el script la marcará como FALTA en el resumen
               Write-Host "::warning::No se pudo descargar $($d.File): $($_.Exception.Message)"
             }
           }
 
       - name: Ejecutar setup (TestMode, desatendido)
-        shell: powershell   # Windows PowerShell 5.1, igual que en los equipos de la empresa
+        shell: powershell
         run: |
-          .\setup_modelado.ps1 -TestMode -Squad "${{ github.event.inputs.squad }}" -NoPause -AllowAdmin
+          Write-Host "Squad: $env:SQUAD"
+          .\setup_modelado.ps1 -TestMode -Squad "$env:SQUAD" -NoPause -AllowAdmin
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verificar resultado
         if: always()
         shell: powershell
         run: |
-          $root = Join-Path $env:USERPROFILE 'modelado_test'
-          $squad = "${{ github.event.inputs.squad }}".ToUpper()
+          $root  = Join-Path $env:USERPROFILE 'modelado_test'
+          $squad = $env:SQUAD.ToUpper()
           $checks = [ordered]@{
             'Carpeta .dbt del squad' = Join-Path $root ".dbt\SU_SQUAD_${squad}_TRANSFORM"
             'Python portable'        = (Get-ChildItem "$root\portables" -Filter python.exe -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
@@ -88,8 +98,7 @@ jobs:
             if ($p -and (Test-Path $p)) { Write-Host "[OK]    $k" }
             else { Write-Host "[FALTA] $k"; $fail = $true }
           }
-          # El PATH real del usuario NO debe contener nada de modelado_test
-          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          $userPath = (Get-ItemProperty -Path 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path
           if ($userPath -match 'modelado_test') {
             Write-Host "::error::TestMode ha modificado el PATH del usuario."
             $fail = $true
