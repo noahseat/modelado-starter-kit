@@ -12,16 +12,30 @@
                  ni la asociación de ficheros .dbs.
       (ninguno)  Instalación real en %USERPROFILE%.
 
+    Parámetros para automatizar (GitHub Actions):
+      -Squad SG_3   No pregunta el squad.
+      -NoPause      No espera ENTER al final y nunca abre ventanas ni pide datos.
+      -AllowAdmin   Permite ejecutar como administrador. SOLO funciona dentro de
+                    GitHub Actions y SOLO junto con -TestMode o -DryRun.
+
     Estructura esperada junto al script:
       installers\python\    Winpython64-3.11.8.0dot.exe
       installers\git\       PortableGit-x.xx.x-64-bit.7z.exe
       installers\vscode\    VSCode-win32-x64-x.xx.x.zip
       installers\dbschema\  dbschema_windows_10_1_4.zip
+
+.EXAMPLE
+    .\setup_modelado.ps1 -TestMode
+    .\setup_modelado.ps1 -Squad SG_3
+    .\setup_modelado.ps1 -TestMode -Squad SG_3 -NoPause -AllowAdmin   # GitHub Actions
 #>
 [CmdletBinding()]
 param(
     [switch]$DryRun,
     [switch]$TestMode,
+    [string]$Squad,
+    [switch]$NoPause,
+    [switch]$AllowAdmin,
     [switch]$SkipDbt,
     [switch]$SkipVSCodeExtension,
     [switch]$SkipDbsAssociation
@@ -33,7 +47,7 @@ $ErrorActionPreference = 'Stop'
 # CONFIGURACIÓN
 # ============================================================
 
-$SETUP_VERSION         = '1.2.0'
+$SETUP_VERSION         = '1.3.0'
 $PYTHON_VERSION        = '3.11.8'
 $DBT_CORE_VERSION      = '1.11.6'
 $DBT_SNOWFLAKE_VERSION = '1.11.2'
@@ -41,6 +55,8 @@ $VSCODE_EXTENSION      = 'YuTengjing.open-in-external-app'
 $PIP_TRUSTED_HOSTS     = @('--trusted-host', 'pypi.org',
                            '--trusted-host', 'pypi.python.org',
                            '--trusted-host', 'files.pythonhosted.org')
+
+$IsCI = ($env:GITHUB_ACTIONS -eq 'true') -or ($env:CI -eq 'true')
 
 $ScriptRoot    = $PSScriptRoot
 $InstallersDir = Join-Path $ScriptRoot 'installers'
@@ -85,6 +101,12 @@ function Add-Result {
         Estado     = $Status
         Detalle    = $Detail
     })
+}
+
+function Exit-Setup {
+    param([int]$Code)
+    if (-not $NoPause) { Read-Host 'Pulsa ENTER para cerrar' | Out-Null }
+    exit $Code
 }
 
 # ============================================================
@@ -143,7 +165,7 @@ function Invoke-Native {
 function Invoke-NativeLive {
     param([string]$Exe, [string[]]$Arguments)
     $ErrorActionPreference = 'Continue'
-    & $Exe @Arguments | Out-Host
+    & $Exe @Arguments 2>&1 | ForEach-Object { "$_" } | Out-Host
     return $LASTEXITCODE
 }
 
@@ -305,6 +327,7 @@ Write-Host ''
 if ($DryRun)   { Write-Host 'MODO: DRY RUN - no se realizará ningún cambio' -ForegroundColor Cyan }
 if ($TestMode) { Write-Host 'MODO: TEST - entorno aislado en modelado_test' -ForegroundColor Cyan }
 if (-not $DryRun -and -not $TestMode) { Write-Host 'MODO: REAL' -ForegroundColor Red }
+if ($IsCI)     { Write-Host 'ENTORNO: CI (GitHub Actions)' -ForegroundColor Cyan }
 Write-Host ''
 Write-Host "Usuario Windows : $env:USERNAME"
 Write-Host "Perfil          : $env:USERPROFILE"
@@ -313,24 +336,40 @@ Write-Host "Carpeta script  : $ScriptRoot"
 
 Write-Step '0. Comprobaciones previas'
 
-if (Test-IsAdmin) {
-    Write-Fail 'No ejecutes este configurador como administrador.'
-    Write-Info 'Cierra esta ventana y lánzalo con tu usuario normal.'
-    Read-Host 'Pulsa ENTER para cerrar' | Out-Null
-    exit 1
+# -AllowAdmin solo es válido en CI y nunca en modo real
+if ($AllowAdmin) {
+    if (-not $IsCI) {
+        Write-Fail '-AllowAdmin solo se puede usar dentro de GitHub Actions.'
+        Exit-Setup 1
+    }
+    if (-not ($TestMode -or $DryRun)) {
+        Write-Fail '-AllowAdmin exige -TestMode o -DryRun. Nunca se permite en modo real.'
+        Exit-Setup 1
+    }
 }
-Write-OK 'Ejecutando con usuario estándar (sin administrador).'
+
+if (Test-IsAdmin) {
+    if ($AllowAdmin) {
+        Write-Warn 'Ejecutando como administrador (permitido solo por ser CI + modo prueba).'
+    }
+    else {
+        Write-Fail 'No ejecutes este configurador como administrador.'
+        Write-Info 'Cierra esta ventana y lánzalo con tu usuario normal.'
+        Exit-Setup 1
+    }
+}
+else {
+    Write-OK 'Ejecutando con usuario estándar (sin administrador).'
+}
 
 if ($PSVersionTable.PSVersion.Major -lt 5) {
     Write-Fail "Se necesita PowerShell 5 o superior (tienes $($PSVersionTable.PSVersion))."
-    Read-Host 'Pulsa ENTER para cerrar' | Out-Null
-    exit 1
+    Exit-Setup 1
 }
 
 if (-not [Environment]::Is64BitOperatingSystem) {
     Write-Fail 'Los portables son de 64 bits y este Windows no lo es.'
-    Read-Host 'Pulsa ENTER para cerrar' | Out-Null
-    exit 1
+    Exit-Setup 1
 }
 
 if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
@@ -360,11 +399,25 @@ try {
     # ---------- 1. Squad (único dato que se pide) ----------
     Write-Step '1. Squad'
 
-    do {
-        $SquadCode = (Read-Host '  Indica tu SQUAD (ej.: SG_3)').Trim().ToUpper()
-        $valid = $SquadCode -match '^[A-Z0-9]+(_[A-Z0-9]+)*$'
-        if (-not $valid) { Write-Warn 'Formato no válido. Ejemplo correcto: SG_3' }
-    } while (-not $valid)
+    $squadPattern = '^[A-Z0-9]+(_[A-Z0-9]+)*$'
+
+    if ($Squad) {
+        $SquadCode = $Squad.Trim().ToUpper()
+        if ($SquadCode -notmatch $squadPattern) {
+            throw "El squad '$Squad' no tiene un formato válido. Ejemplo: SG_3"
+        }
+        Write-OK "Squad recibido por parámetro: $SquadCode"
+    }
+    elseif ($NoPause) {
+        throw 'Con -NoPause hay que indicar el squad con -Squad (ej.: -Squad SG_3).'
+    }
+    else {
+        do {
+            $SquadCode = (Read-Host '  Indica tu SQUAD (ej.: SG_3)').Trim().ToUpper()
+            $valid = $SquadCode -match $squadPattern
+            if (-not $valid) { Write-Warn 'Formato no válido. Ejemplo correcto: SG_3' }
+        } while (-not $valid)
+    }
 
     $TransformName = "SU_SQUAD_${SquadCode}_TRANSFORM"
     $TransformDir  = Join-Path $DbtDir $TransformName
@@ -404,10 +457,15 @@ try {
             $PythonExe = Get-PortablePythonExe
 
             if (-not $PythonExe) {
-                Write-Warn 'La extracción automática no ha funcionado. Se abrirá el asistente de WinPython.'
-                Write-Info "Cuando pida carpeta de destino, indica: $PortablesDir"
-                Start-Process -FilePath $inst.FullName -Wait
-                $PythonExe = Get-PortablePythonExe
+                if ($NoPause) {
+                    Write-Fail 'La extracción automática de WinPython no ha funcionado (modo desatendido: no se abre el asistente).'
+                }
+                else {
+                    Write-Warn 'La extracción automática no ha funcionado. Se abrirá el asistente de WinPython.'
+                    Write-Info "Cuando pida carpeta de destino, indica: $PortablesDir"
+                    Start-Process -FilePath $inst.FullName -Wait
+                    $PythonExe = Get-PortablePythonExe
+                }
             }
         }
     }
@@ -697,6 +755,11 @@ try {
         Write-OK "Private key en su sitio: $KeyDest"
         Add-Result 'Private key' 'OK'
     }
+    elseif ($IsCI) {
+        # En CI nunca hay private key (y nunca debe subirse al repo)
+        Write-Info 'CI: no se comprueba la private key.'
+        Add-Result 'Private key' 'OMITIDO' 'CI'
+    }
     else {
         Write-Warn 'Todavía no está la private key. Cuando la tengas, cópiala con este nombre:'
         Write-Info $KeyDest
@@ -793,7 +856,7 @@ finally {
         Write-Info "Log guardado en: $LogDir"
     }
     Write-Host ''
-    Read-Host 'Pulsa ENTER para cerrar' | Out-Null
+    if (-not $NoPause) { Read-Host 'Pulsa ENTER para cerrar' | Out-Null }
 }
 
 exit $exitCode

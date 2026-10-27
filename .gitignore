@@ -1,10 +1,13 @@
 # Instaladores (pesan demasiado; el workflow los descarga)
-installers/
+installers/**
+!installers/**/
+!installers/**/.gitkeep
 
-# Credenciales
+# Credenciales: NUNCA al repo
 *.p8
 profiles.yml
 .env
+.env.*
 
 # Logs y pruebas
 modelado_test/
