@@ -3,6 +3,8 @@
 name: Test setup modelado
 # forzar ejecución
 on:
+  push:
+    branches: [feat/test]
   workflow_dispatch:
     inputs:
       squad:
