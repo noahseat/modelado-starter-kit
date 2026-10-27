@@ -1,7 +1,6 @@
+# Va en: .github/workflows/test_setup.yml  (rama main)
 name: Test setup modelado
 
-# En main solo se lanza a mano: Actions > Test setup modelado > Run workflow
-# En "Use workflow from" elige la rama que quieres probar (ej.: feat/test)
 on:
   workflow_dispatch:
     inputs:
@@ -13,6 +12,7 @@ on:
 permissions:
   contents: read
 
+# Si se lanza con push no hay input: se usa SG_3
 env:
   SQUAD: ${{ github.event.inputs.squad || 'SG_3' }}
 
@@ -24,6 +24,16 @@ jobs:
     steps:
       - name: Descargar el repo
         uses: actions/checkout@v4
+
+      - name: Comprobar version del script
+        shell: pwsh
+        run: |
+          $line = Select-String -Path .\setup_modelado.ps1 -Pattern "SETUP_VERSION\s*=" | Select-Object -First 1
+          Write-Host "Script: $($line.Line.Trim())"
+          if (-not (Select-String -Path .\setup_modelado.ps1 -Pattern '\[switch\]\$AllowAdmin' -Quiet)) {
+            Write-Host "::error::El setup_modelado.ps1 de esta rama no es la v1.3 (no tiene -AllowAdmin)."
+            exit 1
+          }
 
       - name: Comprobar que no hay secretos en el repo
         shell: pwsh
@@ -64,6 +74,7 @@ jobs:
       - name: Ejecutar setup (TestMode, desatendido)
         shell: powershell
         run: |
+          Write-Host "Squad: $env:SQUAD"
           .\setup_modelado.ps1 -TestMode -Squad "$env:SQUAD" -NoPause -AllowAdmin
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -87,7 +98,7 @@ jobs:
             if ($p -and (Test-Path $p)) { Write-Host "[OK]    $k" }
             else { Write-Host "[FALTA] $k"; $fail = $true }
           }
-          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          $userPath = (Get-ItemProperty -Path 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path
           if ($userPath -match 'modelado_test') {
             Write-Host "::error::TestMode ha modificado el PATH del usuario."
             $fail = $true
