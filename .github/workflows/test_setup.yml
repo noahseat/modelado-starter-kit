@@ -1,7 +1,7 @@
 # Va en: .github/workflows/test_setup.yml
 # Se lanza a mano: pestaña Actions > "Test setup modelado" > Run workflow
 name: Test setup modelado
-
+# forzar ejecución
 on:
   workflow_dispatch:
     inputs:
