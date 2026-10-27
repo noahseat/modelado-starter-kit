@@ -1,0 +1,105 @@
+name: Test setup modelado
+
+# En main solo se lanza a mano: Actions > Test setup modelado > Run workflow
+# En "Use workflow from" elige la rama que quieres probar (ej.: feat/test)
+on:
+  workflow_dispatch:
+    inputs:
+      squad:
+        description: 'Squad de prueba'
+        required: true
+        default: 'SG_3'
+
+permissions:
+  contents: read
+
+env:
+  SQUAD: ${{ github.event.inputs.squad || 'SG_3' }}
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Descargar el repo
+        uses: actions/checkout@v4
+
+      - name: Comprobar que no hay secretos en el repo
+        shell: pwsh
+        run: |
+          $bad = Get-ChildItem -Recurse -File -Include *.p8, profiles.yml, .env -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '\\.git\\' }
+          if ($bad) {
+            Write-Host "::error::Hay ficheros sensibles en el repo:"
+            $bad | ForEach-Object { Write-Host "  $($_.FullName)" }
+            exit 1
+          }
+          Write-Host "OK: no hay .p8, profiles.yml ni .env en el repo."
+
+      - name: Descargar instaladores
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $downloads = @(
+            @{ Dir = 'python';   File = 'Winpython64-3.11.8.0dot.exe';      Url = 'https://github.com/winpython/winpython/releases/download/7.1.20240203final/Winpython64-3.11.8.0dot.exe' },
+            @{ Dir = 'git';      File = 'PortableGit-2.49.0-64-bit.7z.exe'; Url = 'https://github.com/git-for-windows/git/releases/download/v2.49.0.windows.1/PortableGit-2.49.0-64-bit.7z.exe' },
+            @{ Dir = 'vscode';   File = 'VSCode-win32-x64.zip';             Url = 'https://update.code.visualstudio.com/latest/win32-x64-archive/stable' },
+            @{ Dir = 'dbschema'; File = 'dbschema_windows_10_1_4.zip';      Url = 'https://dbschema.com/download/dbschema_windows_10_1_4.zip' }
+          )
+          foreach ($d in $downloads) {
+            $dir = Join-Path 'installers' $d.Dir
+            New-Item -ItemType Directory $dir -Force | Out-Null
+            $out = Join-Path $dir $d.File
+            Write-Host "Descargando $($d.File)..."
+            try {
+              Invoke-WebRequest $d.Url -OutFile $out -MaximumRetryCount 3 -RetryIntervalSec 5
+              Write-Host ("  OK ({0:N0} MB)" -f ((Get-Item $out).Length / 1MB))
+            }
+            catch {
+              Write-Host "::warning::No se pudo descargar $($d.File): $($_.Exception.Message)"
+            }
+          }
+
+      - name: Ejecutar setup (TestMode, desatendido)
+        shell: powershell
+        run: |
+          .\setup_modelado.ps1 -TestMode -Squad "$env:SQUAD" -NoPause -AllowAdmin
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verificar resultado
+        if: always()
+        shell: powershell
+        run: |
+          $root  = Join-Path $env:USERPROFILE 'modelado_test'
+          $squad = $env:SQUAD.ToUpper()
+          $checks = [ordered]@{
+            'Carpeta .dbt del squad' = Join-Path $root ".dbt\SU_SQUAD_${squad}_TRANSFORM"
+            'Python portable'        = (Get-ChildItem "$root\portables" -Filter python.exe -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+            'dbt.exe'                = (Get-ChildItem "$root\portables" -Filter dbt.exe -Recurse -Depth 4 -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+            'Git portable'           = Join-Path $root 'portables\PortableGit\bin\git.exe'
+            'VS Code'                = Join-Path $root 'portables\VSCode\Code.exe'
+            'DbSchema'               = Join-Path $root 'portables\dbschema_windows\DbSchema.exe'
+          }
+          $fail = $false
+          foreach ($k in $checks.Keys) {
+            $p = $checks[$k]
+            if ($p -and (Test-Path $p)) { Write-Host "[OK]    $k" }
+            else { Write-Host "[FALTA] $k"; $fail = $true }
+          }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if ($userPath -match 'modelado_test') {
+            Write-Host "::error::TestMode ha modificado el PATH del usuario."
+            $fail = $true
+          } else {
+            Write-Host "[OK]    PATH del usuario sin tocar"
+          }
+          if ($fail) { exit 1 }
+
+      - name: Guardar logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-setup
+          path: ~/modelado_test/modelado_setup_logs/
+          if-no-files-found: ignore
