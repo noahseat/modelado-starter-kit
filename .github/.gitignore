@@ -1,0 +1,12 @@
+# Instaladores (pesan demasiado; el workflow los descarga)
+installers/
+
+# Credenciales
+*.p8
+profiles.yml
+.env
+
+# Logs y pruebas
+modelado_test/
+modelado_setup_logs/
+*.log

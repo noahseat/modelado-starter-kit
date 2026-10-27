@@ -1,0 +1,26 @@
+# Plantilla de profiles.yml para setup_modelado.ps1
+# Va en: config\profiles_template.yml (junto al script)
+#
+# Copia aqui el bloque de vuestro profiles.yml real y deja estos marcadores:
+#   {CODIGO}            -> codigo de squad (lo pide el script)
+#   {USERNAME}          -> usuario de Windows
+#   {PRIVATE_KEY_PATH}  -> ruta de la .p8 (entre comillas simples)
+#   {PASSPHRASE}        -> passphrase (entre comillas simples, la pide el script)
+#
+# Mientras quede algun valor RELLENAR_..., el script NO generara profiles.yml.
+# NUNCA pongas aqui una contrasena real. Las lineas que empiezan por # se ignoran.
+
+SU_SQUAD_{CODIGO}_TRANSFORM:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: <RELLENAR_ACCOUNT>
+      user: <RELLENAR_USUARIO_SNOWFLAKE>
+      role: <RELLENAR_ROLE>
+      warehouse: <RELLENAR_WAREHOUSE>
+      database: <RELLENAR_DATABASE>
+      schema: <RELLENAR_SCHEMA>
+      private_key_path: '{PRIVATE_KEY_PATH}'
+      private_key_passphrase: '{PASSPHRASE}'
+      threads: 4
